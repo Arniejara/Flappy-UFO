@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flappy UFO</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: black;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            border: 1px solid white;
+        }
+        #error {
+            color: red;
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            max-width: 400px;
+            word-wrap: break-word;
+        }
+    </style>
+</head>
+<body>
+    <div id="error"></div>
+    <canvas id="game" width="400" height="600"></canvas>
+    <script>
+        try {
+            const canvas = document.getElementById('game');
+            const ctx = canvas.getContext('2d');
+            const errorDiv = document.getElementById('error');
+
+            if (!canvas || !ctx) {
+                throw new Error("Canvas or context not found! Make sure the HTML is loaded correctly.");
+            }
+
+            let gameRunning = false;
+            let won = false;
+            let score = 0;
+            let level = 1;
+            let gravity = 0.5;
+            let velocity = 0;
+            let jump = -8;
+            let pipeWidth = 80;
+            let basePipeGap = 200;
+            let pipeGap = basePipeGap;
+            let pipeSpeed = 2;
+            let basePipeInterval = 300;
+            let pipeInterval = basePipeInterval;
+            let pipesPerLevel = 5;
+            let maxLevel = 10;
+
+            let ufo = {
+                x: 50,
+                y: 300,
+                width: 50,
+                height: 25,
+                rotation: 0
+            };
+
+            let pipes = [];
+            let stars = [];
+            for (let i = 0; i < 100; i++) {
+                stars.push({
+                    x: Math.random() * canvas.width,
+                    y: Math.random() * canvas.height,
+                    size: Math.random() * 2 + 1,
+                    speed: Math.random() * 0.5 + 0.1
+                });
+            }
+
+            let powerUps = [];
+            let shieldActive = false;
+            let shieldEndTime = 0;
+
+            let highScore = localStorage.getItem('flappyUFOHighScore') || 0;
+
+            let audioCtx;
+            let oscillator;
+            let gainNode;
+            const melody1 = [647.27, 610.94, 647.27, 610.94, 647.27, 484.90, 576.65, 543.54, 431.43];
+            const melody2 = [323.63, 323.63, 342.88, 384.87, 384.87, 342.88, 323.63, 288.33, 256.87, 256.87, 288.33, 323.63, 323.63, 288.33, 288.33];
+            const melody3 = [432.00, 323.63, 384.87, 363.27, 342.88, 256.87, 342.88, 323.63];
+            const medleySections = [melody1, melody2, melody3];
+            let currentSection = 0;
+            let noteIndex = 0;
+            let musicInterval;
+            const triumphantMelody = [513.74, 647.27, 769.74, 1027.48, 685.77, 864.00, 1027.48, 1027.48];
+            let triumphantNoteIndex = 0;
+            let triumphantInterval;
+
+            function startMedley() {
+                if (!audioCtx) {
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    gainNode = audioCtx.createGain();
+                    gainNode.gain.value = 0.1;
+                    gainNode.connect(audioCtx.destination);
+                }
+                playNextMedleyNote();
+                musicInterval = setInterval(playNextMedleyNote, 200);
+            }
+
+            function playNextMedleyNote() {
+                if (oscillator) oscillator.stop();
+                oscillator = audioCtx.createOscillator();
+                oscillator.type = 'square';
+                oscillator.frequency.value = medleySections[currentSection][noteIndex];
+                oscillator.connect(gainNode);
+                oscillator.start();
+                noteIndex = (noteIndex + 1) % medleySections[currentSection].length;
+                if (noteIndex === 0) {
+                    currentSection = (currentSection + 1) % medleySections.length;
+                }
+            }
+
+            function stopMedley() {
+                if (musicInterval) clearInterval(musicInterval);
+                if (oscillator) oscillator.stop();
+            }
+
+            function startTriumphant() {
+                playNextTriumphantNote();
+                triumphantInterval = setInterval(playNextTriumphantNote, 300);
+            }
+
+            function playNextTriumphantNote() {
+                if (oscillator) oscillator.stop();
+                oscillator = audioCtx.createOscillator();
+                oscillator.type = 'sawtooth';
+                oscillator.frequency.value = triumphantMelody[triumphantNoteIndex];
+                oscillator.connect(gainNode);
+                oscillator.start();
+                triumphantNoteIndex = (triumphantNoteIndex + 1) % triumphantMelody.length;
+            }
+
+            function stopTriumphant() {
+                if (triumphantInterval) clearInterval(triumphantInterval);
+                if (oscillator) oscillator.stop();
+            }
+
+            function drawBackground() {
+                let gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+                gradient.addColorStop(0, 'black');
+                gradient.addColorStop(1, 'purple');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                ctx.fillStyle = 'white';
+                stars.forEach(star => {
+                    ctx.fillRect(star.x, star.y, star.size, star.size);
+                    if (gameRunning || won) {
+                        star.x -= star.speed;
+                        if (star.x < 0) star.x = canvas.width;
+                    }
+                });
+            }
+
+            function drawUFO() {
+                ctx.save();
+                if (shieldActive) {
+                    ctx.shadowColor = 'lime';
+                    ctx.shadowBlur = 20;
+                }
+                ctx.fillStyle = 'silver';
+                ctx.beginPath();
+                ctx.ellipse(ufo.x, ufo.y, ufo.width / 2, ufo.height / 2, 0, 0, 2 * Math.PI);
+                ctx.fill();
+
+                ctx.strokeStyle = 'darkgray';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.ellipse(ufo.x, ufo.y, ufo.width / 2, ufo.height / 2, 0, 0, 2 * Math.PI);
+                ctx.stroke();
+
+                ctx.fillStyle = 'lightblue';
+                ctx.beginPath();
+                ctx.arc(ufo.x, ufo.y - 8, 12, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.shadowColor = 'lightblue';
+                ctx.shadowBlur = 10;
+                ctx.fill();
+                ctx.shadowBlur = 0;
+
+                ctx.fillStyle = 'rgba(0, 255, 255, 0.5)';
+                ctx.beginPath();
+                ctx.moveTo(ufo.x - 10, ufo.y + ufo.height / 2);
+                ctx.lineTo(ufo.x + 10, ufo.y + ufo.height / 2);
+                ctx.lineTo(ufo.x, ufo.y + ufo.height / 2 + 30);
+                ctx.fill();
+
+                ctx.restore();
+            }
+
+            function drawPipe(pipe) {
+                ctx.save();
+                ctx.shadowColor = 'lime';
+                ctx.shadowBlur = 10;
+                ctx.fillStyle = 'gray';
+                ctx.fillRect(pipe.x, 0, pipeWidth, pipe.top);
+                ctx.fillRect(pipe.x, pipe.bottom, pipeWidth, canvas.height - pipe.bottom);
+
+                ctx.fillStyle = 'yellow';
+                for (let i = 10; i < pipe.top - 10; i += 30) {
+                    ctx.fillRect(pipe.x + 10, i, 20, 10);
+                    ctx.fillRect(pipe.x + 50, i, 20, 10);
+                }
+                for (let i = pipe.bottom + 10; i < canvas.height - 10; i += 30) {
+                    ctx.fillRect(pipe.x + 10, i, 20, 10);
+                    ctx.fillRect(pipe.x + 50, i, 20, 10);
+                }
+                ctx.restore();
+            }
+
+            function drawPowerUp(powerUp) {
+                ctx.fillStyle = 'gold';
+                ctx.beginPath();
+                ctx.arc(powerUp.x, powerUp.y, 10, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.fillStyle = 'lime';
+                ctx.font = '10px Arial';
+                ctx.fillText('S', powerUp.x - 3, powerUp.y + 3);
+            }
+
+            function update() {
+                if (!gameRunning) return;
+
+                velocity += gravity;
+                ufo.y += velocity;
+
+                if (ufo.y + ufo.height / 2 > canvas.height || ufo.y - ufo.height / 2 < 0) {
+                    if (!shieldActive) {
+                        gameOver();
+                    } else {
+                        velocity = -velocity / 2;
+                    }
+                }
+
+                const currentTime = Date.now();
+                if (shieldActive && currentTime > shieldEndTime) {
+                    shieldActive = false;
+                }
+
+                if (pipes.length === 0 || pipes[pipes.length - 1].x < canvas.width - pipeInterval) {
+                    let gapY = Math.random() * (canvas.height - 200) + 100;
+                    pipes.push({
+                        x: canvas.width,
+                        top: gapY - pipeGap / 2,
+                        bottom: gapY + pipeGap / 2,
+                        scored: false
+                    });
+
+                    if (Math.random() < 0.1) {
+                        powerUps.push({
+                            x: canvas.width + pipeWidth / 2,
+                            y: gapY
+                        });
+                    }
+                }
+
+                for (let i = 0; i < pipes.length; i++) {
+                    pipes[i].x -= pipeSpeed;
+
+                    if (pipes[i].x + pipeWidth < 0) {
+                        pipes.splice(i, 1);
+                        i--;
+                        continue;
+                    }
+
+                    if (ufo.x + ufo.width / 2 > pipes[i].x && ufo.x - ufo.width / 2 < pipes[i].x + pipeWidth) {
+                        if (ufo.y - ufo.height / 2 < pipes[i].top || ufo.y + ufo.height / 2 > pipes[i].bottom) {
+                            if (!shieldActive) {
+                                gameOver();
+                            }
+                        }
+                    }
+
+                    if (pipes[i].x + pipeWidth < ufo.x && !pipes[i].scored) {
+                        score++;
+                        pipes[i].scored = true;
+                        checkLevelUp();
+                    }
+                }
+
+                for (let i = 0; i < powerUps.length; i++) {
+                    powerUps[i].x -= pipeSpeed;
+
+                    if (powerUps[i].x + 10 < 0) {
+                        powerUps.splice(i, 1);
+                        i--;
+                        continue;
+                    }
+
+                    if (Math.abs(ufo.x - powerUps[i].x) < 20 && Math.abs(ufo.y - powerUps[i].y) < 20) {
+                        shieldActive = true;
+                        shieldEndTime = Date.now() + 10000;
+                        powerUps.splice(i, 1);
+                        i--;
+                    }
+                }
+            }
+
+            function checkLevelUp() {
+                if (score % pipesPerLevel === 0 && level < maxLevel) {
+                    level++;
+                    pipeGap = basePipeGap - (level - 1) * 10;
+                    pipeSpeed += 0.2;
+                    pipeInterval = basePipeInterval - (level - 1) * 10;
+                }
+                if (level === maxLevel && score >= pipesPerLevel * maxLevel) {
+                    won = true;
+                    gameRunning = false;
+                    stopMedley();
+                    startTriumphant();
+                }
+            }
+
+            function draw() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                drawBackground();
+                drawUFO();
+                pipes.forEach(drawPipe);
+                powerUps.forEach(drawPowerUp);
+
+                ctx.fillStyle = 'white';
+                ctx.font = '20px Arial';
+                ctx.fillText('Score: ' + score, 10, 30);
+                ctx.fillText('Level: ' + level, 10, 60);
+                ctx.fillText('High Score: ' + highScore, 10, 90);
+                if (shieldActive) {
+                    ctx.fillText('Shield Active!', 200, 30);
+                }
+
+                if (!gameRunning && !won) {
+                    ctx.font = '30px Arial';
+                    ctx.fillText('Flappy UFO', canvas.width / 2 - 100, canvas.height / 2 - 20);
+                    ctx.font = '20px Arial';
+                    ctx.fillText('Click or Space to Start', canvas.width / 2 - 120, canvas.height / 2 + 20);
+                }
+
+                if (won) {
+                    for (let i = 0; i < 100; i++) {
+                        ctx.fillStyle = `hsl(${Math.random()*360}, 100%, 50%)`;
+                        ctx.fillRect(Math.random()*canvas.width, Math.random()*canvas.height, 5, 5);
+                    }
+
+                    ctx.fillStyle = 'blue';
+                    ctx.beginPath();
+                    ctx.arc(canvas.width / 2, canvas.height - 100, 80, 0, 2 * Math.PI);
+                    ctx.fill();
+                    ctx.fillStyle = 'green';
+                    ctx.fillRect(canvas.width / 2 - 40, canvas.height - 100, 80, 40);
+
+                    ctx.fillStyle = 'silver';
+                    ctx.beginPath();
+                    ctx.ellipse(canvas.width / 2 + 50, canvas.height - 60, 30, 10, 0, 0, 2 * Math.PI);
+                    ctx.fill();
+
+                    if (ufo.y < canvas.height - 120) {
+                        ufo.y += 1;
+                    }
+                    drawUFO();
+
+                    ctx.fillStyle = 'white';
+                    ctx.font = '30px Arial';
+                    ctx.fillText('Huge Party! You Win!', canvas.width / 2 - 150, canvas.height / 2 - 50);
+                    ctx.font = '20px Arial';
+                    ctx.fillText('UFO Lands on Earth', canvas.width / 2 - 100, canvas.height / 2);
+                    ctx.fillText('Discovers Mercury Fuel!', canvas.width / 2 - 120, canvas.height / 2 + 30);
+                    ctx.fillText('Click or Space to Restart', canvas.width / 2 - 120, canvas.height / 2 + 60);
+                }
+            }
+
+            function gameOver() {
+                gameRunning = false;
+                won = false;
+                stopMedley();
+                velocity = 0;
+                pipes = [];
+                powerUps = [];
+                ufo.y = 300;
+                if (score > highScore) {
+                    highScore = score;
+                    localStorage.setItem('flappyUFOHighScore', highScore);
+                }
+                level = 1;
+                pipeGap = basePipeGap;
+                pipeSpeed = 2;
+                pipeInterval = basePipeInterval;
+                score = 0;
+            }
+
+            function loop() {
+                try {
+                    update();
+                    draw();
+                } catch (e) {
+                    errorDiv.textContent = 'Error in game loop: ' + e.message;
+                }
+                requestAnimationFrame(loop);
+            }
+
+            canvas.addEventListener('click', () => {
+                canvas.focus();
+                if (!gameRunning) {
+                    if (won) {
+                        stopTriumphant();
+                        won = false;
+                    }
+                    gameRunning = true;
+                    startMedley();
+                } else {
+                    velocity = jump;
+                }
+            });
+
+            document.addEventListener('keydown', (e) => {
+                if (e.key === ' ') {
+                    e.preventDefault();
+                    canvas.focus();
+                    if (!gameRunning) {
+                        if (won) {
+                            stopTriumphant();
+                            won = false;
+                        }
+                        gameRunning = true;
+                        startMedley();
+                    } else {
+                        velocity = jump;
+                    }
+                }
+            });
+
+            loop();
+        } catch (e) {
+            document.getElementById('error').textContent = 'Error: ' + e.message + '. Check console for details.';
+        }
+    </script>
+</body>
+</html>
